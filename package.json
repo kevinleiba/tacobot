@@ -1,0 +1,22 @@
+{
+  "name": "tacoBot",
+  "version": "0.0.1",
+  "description": "giving taco to people on slack",
+  "main": "index.js",
+  "author": "Kevin Leiba",
+  "license": "MIT",
+  "dependencies": {
+    "botkit": "^0.7.4",
+    "nodemon": "^1.18.10"
+  },
+  "scripts": {
+    "start": "NODE_ENV=development nodemon index.js",
+    "test-slack": "NODE_ENV=development nodemon slack.test.js",
+    "test-taco": "NODE_ENV=development nodemon taco.test.js"
+  },
+  "nodemonConfig": {
+    "ignore": [
+      "db.json"
+    ]
+  }
+}
