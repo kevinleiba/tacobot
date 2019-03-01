@@ -41,23 +41,30 @@ const writeMembers = APIMembers => {
   DB.saveUsers(formattedDBUsers);
 };
 
-const giveTaco = index => {
+const giveTaco = (index, amount = 1) => {
   const DBUsers = DB.getUsers();
   const user = DBUsers[index];
-  DBUsers[index] = { ...user, tacos: user.tacos + 1 };
+  DBUsers[index] = { ...user, tacos: user.tacos + amount };
   DB.saveUsers(DBUsers);
 };
 
-const removeLeft = index => {
+const removeLeft = (index, amount = 1) => {
   const DBUsers = DB.getUsers();
   const user = DBUsers[index];
-  DBUsers[index] = { ...user, left: user.left - 1 };
+  DBUsers[index] = { ...user, left: user.left - amount };
   DB.saveUsers(DBUsers);
+};
+
+const resetLeft = () => {
+  const DBUsers = DB.getUsers();
+  const fullUsers = DBUsers.map(user => ({ ...user, left: 5 }));
+  DB.saveUsers(fullUsers);
 };
 
 module.exports = {
   init,
   writeMembers,
   giveTaco,
-  removeLeft
+  removeLeft,
+  resetLeft
 };

@@ -1,6 +1,7 @@
 const { compose, removeStr } = require("./utils.js");
 
 const ID_REGEX = /<@\S*>/;
+const TACO_REGEX = /:taco:/g;
 
 const parseId = id =>
   compose(
@@ -13,6 +14,9 @@ const findID = message => {
   return matching === null ? null : parseId(matching[0]);
 };
 
+const countTacos = message => message.match(TACO_REGEX).length;
+
 module.exports = {
-  findID
+  findID,
+  countTacos
 };

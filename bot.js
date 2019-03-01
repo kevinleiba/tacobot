@@ -9,19 +9,31 @@ const forTaco = controller => {
       const ids = DB.getIDs();
       const userIndex = ids.indexOf(id);
       const senderIndex = ids.indexOf(message.user);
+      const tacosGiven = parser.countTacos(message.text);
       if (userIndex > -1 && userIndex !== senderIndex) {
-        taco.giveTaco(userIndex);
-        taco.removeLeft(senderIndex);
         const user = DB.getUser(userIndex);
         const giver = DB.getUser(senderIndex);
-        bot.reply(
-          message,
-          `Congratz ! <@${user.id}> now has ${user.tacos} tacos !`
-        );
-        bot.reply(
-          message,
-          `<@${message.user}> now has ${giver.left} tacos left... Nice job guys`
-        );
+        if (giver.left >= tacosGiven) {
+          taco.giveTaco(userIndex, tacosGiven);
+          taco.removeLeft(senderIndex, tacosGiven);
+          bot.reply(
+            message,
+            `Congratz ! <@${user.id}> now has ${user.tacos +
+              tacosGiven} tacos !`
+          );
+          bot.reply(
+            message,
+            `<@${message.user}> now has ${giver.left -
+              tacosGiven} tacos left... Nice job guys`
+          );
+        } else {
+          bot.reply(
+            message,
+            `Sorry <@${message.user}>, you only have ${
+              giver.left
+            } tacos remaning.. And you tried to give *${tacosGiven}*`
+          );
+        }
       }
     }
   });
