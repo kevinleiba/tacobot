@@ -41,20 +41,23 @@ const writeMembers = APIMembers => {
   DB.saveUsers(formattedDBUsers);
 };
 
-const giveTaco = name => {
+const giveTaco = index => {
   const DBUsers = DB.getUsers();
-  const index = DB.getUsernames(DBUsers).indexOf(name);
-  if (index > -1) {
-    const user = DBUsers[index];
-    DBUsers[index] = { ...user, tacos: user.tacos + 1 };
-    DB.saveUsers(DBUsers);
-  } else {
-    console.log(`could not find ${name}`);
-  }
+  const user = DBUsers[index];
+  DBUsers[index] = { ...user, tacos: user.tacos + 1 };
+  DB.saveUsers(DBUsers);
+};
+
+const removeLeft = index => {
+  const DBUsers = DB.getUsers();
+  const user = DBUsers[index];
+  DBUsers[index] = { ...user, left: user.left - 1 };
+  DB.saveUsers(DBUsers);
 };
 
 module.exports = {
   init,
   writeMembers,
-  giveTaco
+  giveTaco,
+  removeLeft
 };
