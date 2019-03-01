@@ -39,8 +39,22 @@ const forTaco = controller => {
   });
 };
 
+const forScore = controller => {
+  controller.hears("score", "direct_mention", (bot, message) => {
+    const users = DB.getUsers();
+    const ranked = users.sort((a, b) => b.tacos - a.tacos);
+    const firsts = ranked.slice(0, 5).filter(u => u.tacos > 0);
+    const sentences = firsts.map(
+      (user, index) =>
+        `<@${user.id}> is n°${index + 1} with *${user.tacos}* tacos`
+    );
+    bot.reply(message, sentences.join("\n"));
+  });
+};
+
 const listens = controller => {
   forTaco(controller);
+  forScore(controller);
 };
 
 module.exports = {
