@@ -1,7 +1,4 @@
-const fs = require("fs");
-const path = require("path");
-const DB_PATH = path.join(__dirname, "db.json");
-
+const DB = require("./db.js");
 const slack = require("./slack.js");
 
 const populate = () => {
@@ -19,8 +16,7 @@ const populate = () => {
 };
 
 const init = () => {
-  const exists = fs.existsSync(DB_PATH);
-  if (!exists) return populate();
+  if (!DB.exists()) populate();
 };
 
 const formatUsers = users => {
@@ -31,50 +27,27 @@ const formatUsers = users => {
   }));
 };
 
-const updateUser = (DBUser, APIMember) => {
+const updateUserName = (DBUser, APIMember) => {
   return { ...DBUser, name: APIMember.name };
 };
 
-const getDBUsers = () => {
-  const rawDBUsers = fs.existsSync(DB_PATH) ? fs.readFileSync(DB_PATH) : `[]`;
-  return JSON.parse(rawDBUsers);
-};
-
-const writeToDb = formattedDBUsers => {
-  fs.writeFile(
-    DB_PATH,
-    JSON.stringify(formattedDBUsers),
-    { flag: "w" },
-    err => {
-      if (err) {
-        console.log("ERROR");
-        console.log(err);
-      } else {
-        console.log("ALL GOOD");
-      }
-    }
-  );
-};
-
 const writeMembers = APIMembers => {
-  const DBUsers = getDBUsers();
+  const DBUsers = DB.getUsers();
   const formattedDBUsers = APIMembers.map(APIMember => {
     const DBUser = DBUsers.find(dbu => dbu.id === APIMember.id);
-    if (DBUser !== undefined) return updateUser(DBUser, APIMember);
+    if (DBUser !== undefined) return updateUserName(DBUser, APIMember);
     else return { ...APIMember, tacos: 0, left: 5 };
   });
-  writeToDb(formattedDBUsers);
+  DB.saveUsers(formattedDBUsers);
 };
 
-const dbToNames = DBUsers => DBUsers.map(DBUser => DBUser.name);
-
 const giveTaco = name => {
-  const DBUsers = getDBUsers();
-  const index = dbToNames(DBUsers).indexOf(name);
+  const DBUsers = DB.getUsers();
+  const index = DB.getUsernames(DBUsers).indexOf(name);
   if (index > -1) {
     const user = DBUsers[index];
     DBUsers[index] = { ...user, tacos: user.tacos + 1 };
-    writeToDb(DBUsers);
+    DB.saveUsers(DBUsers);
   } else {
     console.log(`could not find ${name}`);
   }

@@ -12,7 +12,7 @@ bot.startRTM((err, bot, payload) => {
     throw new Error(err);
   } else {
     console.log("Ready to taco !");
-    taco.init(controller);
+    taco.init();
 
     controller.hears(":taco:", "ambient", (bot, message) => {
       console.log("OK ICI !!!!!!!");
