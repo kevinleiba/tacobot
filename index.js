@@ -8,15 +8,25 @@ const controller = Botkit.slackbot(config.controller);
 const bot = controller.spawn({
   token: config.token
 });
-bot.startRTM((err, bot, payload) => {
-  if (err) {
-    throw new Error(err);
-  } else {
-    console.log("Ready to taco !");
-    taco.init();
-    tacobot.listens(controller);
-  }
+
+const startRTM = () => {
+  bot.startRTM((err, _bot, _payload) => {
+    if (err) {
+      console.log(err);
+      return setTimeout(start_rtm, 60000);
+    } else {
+      console.log("Ready to taco !");
+      taco.init();
+      tacobot.listens(controller);
+    }
+  });
+};
+
+controller.on("rtm_close", function(_bot, _err) {
+  start_rtm();
 });
+
+startRTM();
 
 schedule.scheduleJob({ hour: 00, minute: 00 }, () => {
   taco.resetLeft();
