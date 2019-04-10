@@ -28,9 +28,21 @@ You can send a direct message to @tacobot and ask for `how many` tacos to give y
 
 Tacobot is not a published slack app. So you need to configure it manually (and by that I mean to code just a bit) and deploy it to your server (or run it in your machine).
 
-### Config file
+### Slack Installation
 
-First of all, to make it work, you need to create a file called `config.js`.
+#### Create a Slack App
+
+Follow this [link](https://api.slack.com/apps?new_app=1) to create an app on Slack. On the field `App Name` chose `Tacobot` and select your `WorkSpace` according to where you want to install Tacobot.
+
+#### Add features and functionality
+
+Click **Add features and functionality** and select **Bots**. Then click **Add a bot user**. On **Display Name** write **Tacobot** and on **Default username** write **tacobot**. Then validate by clicking **Add Bot User**. A message will appear, select **Authorize**.
+
+**DON'T CLOSE THIS PAGE YET !**
+
+#### Config file
+
+In your code, you need to create a file called `config.js`. Put it in the tacobot root directory.
 It looks like this:
 
 ```javascript
@@ -58,37 +70,20 @@ module.exports = {
 };
 ```
 
-#### NODE_ENV
+These are the values that can be found in the **App Credentials** section.
 
-TODO
-
-#### clientId
-
-TODO
-
-#### clientSecret
-
-TODO
-
-#### scopes
-
-TODO
-
-#### clientSigningSecret
-
-TODO
-
-#### clientVerificationToken
-
-TODO
+```
+clientID -> Client ID
+clientSecret -> Client Secret
+clientVerificationToken -> Verification Token
+clientSigningSecret -> Signing Secret (click `show` button)
+```
 
 #### token
 
-TODO
+The `token` value can be found in the **Install App** tab (on the left menu). In the **OAuth Tokens for Your Team** section, find **Bot User OAuth Access Token** value.
 
-### Slack installation
-
-TODO
+**NOW YOU CAN CLOSE THIS PAGE, YOU'RE READY TO LAUNCH THE PROJECT**
 
 ## Run project
 
@@ -104,7 +99,7 @@ Then you can just run
 yarn start
 ```
 
-The project will be lunched with `nodemon` and reload on every changes.
+The project will be launched with `nodemon` and reload on every changes.
 
 ### Tests
 
@@ -113,7 +108,7 @@ PRs are welcome.
 
 ### Database
 
-Tacobot was supposed to be a POC and then happened to work quite alright. So the database is actually a `.json` file. It will be generated the first time you lunch the project.
+Tacobot was supposed to be a POC and then happened to work quite alright. So the database is actually a `.json` file. It will be generated the first time you launch the project.
 
 ### Botkit
 
