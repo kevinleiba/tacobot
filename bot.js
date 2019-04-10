@@ -35,6 +35,19 @@ const forTaco = controller => {
             } tacos remaning.. And you tried to give *${tacosGiven}*`
           );
         }
+      } else if (userIndex === senderIndex) {
+        bot.api.reactions.add(
+          {
+            timestamp: message.ts,
+            channel: message.channel,
+            name: "fu"
+          },
+          function(err, res) {
+            if (err) {
+              bot.botkit.log("Failed to add emoji reaction :(", err);
+            }
+          }
+        );
       }
     }
   });
