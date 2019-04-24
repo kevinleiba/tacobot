@@ -40,7 +40,19 @@ const forTaco = controller => {
           {
             timestamp: message.ts,
             channel: message.channel,
-            name: "fu"
+            name: "x"
+          },
+          function(err, res) {
+            if (err) {
+              bot.botkit.log("Failed to add emoji reaction :(", err);
+            }
+          }
+        );
+        bot.api.reactions.add(
+          {
+            timestamp: message.ts,
+            channel: message.channel,
+            name: "wink"
           },
           function(err, res) {
             if (err) {
