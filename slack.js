@@ -1,31 +1,22 @@
 const config = require("./config.js");
-const http = require("https");
+const axios = require("axios");
 
 const getAllUsers = () => {
-  return new Promise((resolve, reject) => {
-    const baseUrl = "https://slack.com/api/users.list";
-    const options = [`token=${config.token}`, `limit=100`];
-    const url = `${baseUrl}?${options.join("&")}`;
-    http.get(url, res => {
-      res.setEncoding("utf8");
-      let rawData = "";
-      res.on("data", chunk => {
-        rawData += chunk;
-      });
-      res.on("end", () => {
-        try {
-          console.log("finished api");
-          const parsedData = JSON.parse(rawData);
-          if (parsedData.ok) resolve(parsedData);
-          else reject(parsedData);
-        } catch (e) {
-          reject(e.message);
-        }
-      });
-    });
-  });
+  return axios
+    .get("https://slack.com/api/users.list", {
+      params: { limit: 100 },
+      headers: {
+        Authorization: `Bearer ${config.token}`,
+        "Content-type": "application/x-www-form-urlencoded",
+      },
+    })
+    .then((res) => {
+      if (res.data.ok) return res.data;
+      else throw new Error(res.data);
+    })
+    .catch((e) => new Error(e));
 };
 
 module.exports = {
-  getAllUsers
+  getAllUsers,
 };
