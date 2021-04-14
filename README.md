@@ -32,7 +32,7 @@ Tacobot is not a published slack app. So you need to configure it manually (and 
 
 #### Create a Slack App
 
-Follow this [link](https://api.slack.com/apps?new_app=1) to create an app on Slack. On the field `App Name` chose `Tacobot` and select your `WorkSpace` according to where you want to install Tacobot.
+Follow this [link](https://api.slack.com/apps?new_classic_app=1) to create an app on Slack. On the field `App Name` chose `Tacobot` and select your `WorkSpace` according to where you want to install Tacobot.
 
 #### Add features and functionality
 
@@ -61,12 +61,12 @@ const controller = {
   clientSecret,
   scopes,
   clientVerificationToken,
-  clientSigningSecret
+  clientSigningSecret,
 };
 
 module.exports = {
   controller,
-  token
+  token,
 };
 ```
 
