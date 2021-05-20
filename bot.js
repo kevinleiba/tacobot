@@ -52,6 +52,10 @@ const forScore = controller => {
         (user, index) =>
           `<@${user.id}> is n°${index + 1} with *${user.tacos}* tacos`
       );
+
+      const ownRank = ranked.findIndex(rankedUser => rankedUser.id === message.user.id);
+      sentences.unshift(`You are ranked n°${ownRank} with *${message.user.tacos} tacos*.\n`);
+
       bot.reply(message, sentences.join("\n"));
     }
   );
