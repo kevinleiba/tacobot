@@ -17,7 +17,6 @@ const startRTM = () => {
     } else {
       console.log("Ready to taco !");
       taco.init();
-      tacobot.listens(controller);
     }
   });
 };
@@ -26,6 +25,7 @@ controller.on("rtm_close", function (_bot, _err) {
   startRTM();
 });
 
+tacobot.listens(controller);
 startRTM();
 
 schedule.scheduleJob({ hour: 00, minute: 00 }, () => {
