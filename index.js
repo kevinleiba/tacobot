@@ -5,15 +5,13 @@ const tacobot = require("./bot.js");
 const schedule = require("node-schedule");
 
 const controller = Botkit.slackbot(config.controller);
-const bot = controller.spawn({
-  token: config.token,
-});
 
 let isConnecting = false;
 
 const startRTM = () => {
   if (isConnecting) return;
   isConnecting = true;
+  const bot = controller.spawn({ token: config.token });
   bot.startRTM((err, _bot, _payload) => {
     isConnecting = false;
     if (err) {
