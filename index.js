@@ -9,8 +9,13 @@ const bot = controller.spawn({
   token: config.token,
 });
 
+let isConnecting = false;
+
 const startRTM = () => {
+  if (isConnecting) return;
+  isConnecting = true;
   bot.startRTM((err, _bot, _payload) => {
+    isConnecting = false;
     if (err) {
       console.log(err);
       return setTimeout(startRTM, 60000);
