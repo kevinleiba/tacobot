@@ -134,13 +134,6 @@ export const config = {
     get slackIds(): string[] {
       return csv("ADMIN_SLACK_IDS");
     },
-    // Gates the signed balance-adjustment UI on /admin/users (the "Adjust" column
-    // and its server action). Off by default: the migration to the new tacobot
-    // is complete, so the day-to-day admin flow doesn't need it. Flip to `true`
-    // only for one-off corrections / onboarding grants.
-    get adjustEnabled(): boolean {
-      return boolWithDefault("ADMIN_ADJUST_ENABLED", false);
-    },
   },
   hr: {
     get slackId(): string | undefined {

@@ -36,7 +36,6 @@ export async function deductTacos(formData: FormData) {
 
 export async function adjustTacos(formData: FormData) {
   const adminId = await requireAdminId();
-  if (!config.admin.adjustEnabled) throw new Error("adjust capability is disabled");
   const recipientId = String(formData.get("recipient_id") ?? "");
   const amountRaw = String(formData.get("amount") ?? "");
   const reason = String(formData.get("reason") ?? "").trim() || null;

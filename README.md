@@ -56,7 +56,6 @@ Copy `.env.example` to `.env.local` (for dev) or set them in Vercel project sett
 | `TACO_ALT_EMOJI_NAME` | Optional; custom emoji name (no colons) accepted as currency alongside `:taco:`. When set, the bot's confirmation reaction (if enabled) uses this emoji instead of `:taco:`. |
 | `TACO_REACT_ON_GIVE` | Optional; if `true`, the bot adds a `:taco:` (or alt-emoji) reaction to the giver's message as a visual ack. Defaults to `false` — recommended off, since the bot's reaction is easily mistaken for an extra give. |
 | `ADMIN_SLACK_IDS` | Comma-separated Slack user IDs allowed into `/admin` |
-| `ADMIN_ADJUST_ENABLED` | Optional; if `true`, exposes the signed balance-adjustment ("Adjust") column on `/admin/users` for one-off corrections / onboarding grants. Defaults to `false` — day-to-day admin work doesn't need it. |
 | `HR_SLACK_ID` | Optional; if set, `/shop` renders a clickable DM link to this Slack user |
 | `HR_SLACK_HANDLE` | Optional; display handle (without `@`) for the `/shop` HR contact |
 | `AUTH_SECRET` | `openssl rand -base64 32` |
