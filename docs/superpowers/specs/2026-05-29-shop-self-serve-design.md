@@ -20,12 +20,12 @@ In:
 - Cancel refunds balance + restores stock; append-only via `grant` ledger row.
 - Slack `#tacoshop` channel receives a Block Kit message per new order with `Mark fulfilled` and `Cancel & refund` buttons; admin-gated.
 - `/admin/orders` web page with the same fulfill/cancel actions.
+- Buyer self-cancel of own pending orders from `/shop` (web only; no Slack button).
 - Feature flag `SHOP_SELF_SERVE_ENABLED` for staged rollout.
 
 Out:
 
-- Buyer-initiated cancellation.
-- Order history page for end users (use Slack DM with the bot, future work).
+- Order history page for end users beyond pending orders (full history page is future work; use Slack DM with the bot for v1).
 - Partial fulfillment / multi-item carts.
 - Reservation/hold pattern (deduct-at-fulfill or two-phase commit).
 - Admin approval gate before fulfillment.
@@ -42,6 +42,7 @@ Out:
 | Button gate | `ADMIN_SLACK_IDS` only | Mirrors existing admin model; channel membership not sufficient. |
 | Admin web UI | `/admin/orders` list + actions | Belt & suspenders alongside Slack buttons; same underlying functions. |
 | Cancel semantics | Refund balance + restore stock | Append-only `grant` row; predictable. |
+| Buyer self-cancel | Allowed while `status='pending'`, web only (`/shop`) | Same `cancelOrder()` core; gate on `actor.userId === order.userId`; no Slack-side button needed. |
 | Data model | New `orders` table; `transactions` keeps ledger via `orderId` FK | Clean separation: state machine vs. ledger. |
 | Admin manual deduct | Keep current `/admin/users` deduct form | Offline / in-person redemption escape hatch. |
 | Channel config | Required env `TACOSHOP_CHANNEL_ID` | Matches existing env pattern; fail fast if unset. |
@@ -60,7 +61,7 @@ Out:
 
 - `lib/shop/purchase.ts` — `purchase(db, { userId, itemId })` returns `{ kind: "ok"|"unavailable"|"insufficient"|"out_of_stock", order? }`. Atomic.
 - `lib/shop/fulfill.ts` — `fulfillOrder(db, { orderId, adminId })` returns `{ kind: "ok"|"not_pending", order? }`. Atomic.
-- `lib/shop/cancel.ts` — `cancelOrder(db, { orderId, adminId })` returns `{ kind: "ok"|"not_pending", order?, refundTxId? }`. Atomic.
+- `lib/shop/cancel.ts` — `cancelOrder(db, { orderId, actor })` where `actor: { kind: "admin"|"buyer", userId: string }`. Returns `{ kind: "ok"|"not_pending", order?, refundTxId? }`. Atomic. Caller is responsible for authorising the actor; the function trusts the `actor` arg.
 - `lib/slack/format.ts` — extend with `orderPostedBlocks`, `orderFulfilledBlocks`, `orderCancelledBlocks`, `purchaseConfirmationDm`, `orderFulfilledDm`, `orderCancelledDm`.
 - `lib/db/queries.ts` — `listOrders({ status?, userId?, itemId?, cursor?, limit })`, `getOrderById(id)`.
 
@@ -96,9 +97,9 @@ CHECK status='pending'    => fulfilledAt IS NULL AND cancelledAt IS NULL
 CHECK status='fulfilled'  => fulfilledAt IS NOT NULL AND fulfilledByAdminId IS NOT NULL
                           AND cancelledAt IS NULL AND cancelledByAdminId IS NULL
                           AND refundTxId IS NULL
-CHECK status='cancelled'  => cancelledAt IS NOT NULL AND cancelledByAdminId IS NOT NULL
-                          AND refundTxId IS NOT NULL
+CHECK status='cancelled'  => cancelledAt IS NOT NULL AND refundTxId IS NOT NULL
                           AND fulfilledAt IS NULL AND fulfilledByAdminId IS NULL
+                          -- cancelledByAdminId NULL means buyer self-cancelled
 INDEX (status, createdAt)
 INDEX (userId, createdAt)
 INDEX (itemId, createdAt)
@@ -117,7 +118,12 @@ Relax `transactions_shape_and_rule` CHECK for `redeem`:
 
 Interpretation: shop-originated redeem rows have `orderId` set and `adminUserId NULL`; admin-originated redeem rows are the opposite. Audit semantics stay clean: `adminUserId` always means "an admin acted on behalf of someone."
 
-Extend `grant` clause analogously to allow `orderId` set on refund grants: `grant AND fromUserId IS NULL AND adminUserId IS NOT NULL AND itemId IS NULL AND reversedTransactionId IS NULL`. (No change to other constraints; just permits `orderId` to be non-null for `grant` rows whose `reason='order cancelled'`.)
+Extend `grant` clause to also cover refund grants and to allow `adminUserId NULL` for buyer self-cancels:
+
+- New `grant` clause: `grant AND fromUserId IS NULL AND itemId IS NULL AND reversedTransactionId IS NULL`
+  - PLUS: `(adminUserId IS NOT NULL AND orderId IS NULL) OR (orderId IS NOT NULL)`.
+
+Interpretation: admin-issued grant (onboarding/normalisation) has `adminUserId` set and `orderId` null. Refund grants linked to a cancelled order set `orderId`; `adminUserId` is set when an admin cancelled, NULL when the buyer self-cancelled. Same audit semantics as redeem rows: `adminUserId IS NULL` means the actor was the affected user themselves.
 
 ### Purchase flow
 
@@ -156,19 +162,40 @@ No balance/stock movement on fulfill. Idempotent: re-clicking fulfilled order re
 
 ### Cancel flow
 
-Triggered by Slack `Cancel & refund` button OR `/admin/orders` action.
+Triggered by:
 
-1. Verify admin (same as fulfill).
-2. `cancelOrder(db, { orderId, adminId })` transaction:
+- Admin: Slack `Cancel & refund` button OR `/admin/orders` action. Authorise by admin allowlist.
+- Buyer: `/shop` "Cancel" button on a pending order in their own "Your pending orders" panel. Authorise by `session.slackUserId === order.userId`.
+
+Both paths funnel into the same `cancelOrder(db, { orderId, actor })`:
+
+1. Caller authorises and constructs `actor = { kind: "admin"|"buyer", userId }`.
+2. `cancelOrder()` transaction:
    - `SELECT … FOR UPDATE` order by id where `status='pending'`. Missing → `not_pending`.
+   - Defensive: when `actor.kind === "buyer"`, additionally require `order.userId === actor.userId`. (Outer auth already checks this; the inner check is belt + suspenders.)
    - `UPDATE users SET balance = balance + pricePaid WHERE id = order.userId`. (No conditional WHERE — refund always succeeds.)
    - If `item.quantity IS NOT NULL` for this order's item: `UPDATE items SET quantity = quantity + 1 WHERE id = item.id AND quantity IS NOT NULL`.
-   - `INSERT INTO transactions (type='grant', toUserId=order.userId, adminUserId=adminId, amount=order.pricePaid, orderId=order.id, reason='order cancelled') RETURNING *`.
-   - `UPDATE orders SET status='cancelled', cancelledAt=now(), cancelledByAdminId=admin, refundTxId=tx.id WHERE id=order.id`.
-3. Best-effort `chat.update` with `orderCancelledBlocks(order, admin)`.
-4. Best-effort DM to buyer with `orderCancelledDm`.
+   - `INSERT INTO transactions (type='grant', toUserId=order.userId, adminUserId = actor.kind==='admin' ? actor.userId : NULL, amount=order.pricePaid, orderId=order.id, reason = actor.kind==='admin' ? 'order cancelled by admin' : 'order cancelled by buyer') RETURNING *`.
+   - `UPDATE orders SET status='cancelled', cancelledAt=now(), cancelledByAdminId = actor.kind==='admin' ? actor.userId : NULL, refundTxId=tx.id WHERE id=order.id`.
+3. Best-effort `chat.update` with `orderCancelledBlocks(order, actor)`.
+4. Best-effort DM to buyer with `orderCancelledDm`. (Self-cancel still DMs — confirms refund and serves as cross-device receipt.)
+
+Note: `cancelledByAdminId` is null on self-cancel. The previously documented CHECK `status='cancelled' => cancelledByAdminId IS NOT NULL` is relaxed accordingly; see *Schema constraints (updated)* below.
 
 Invariant safety: `balance` decreased at purchase and increases by the same amount on cancel → `balance ≤ receivedTotal` holds. `receivedTotal` is untouched throughout.
+
+#### Schema constraints (updated)
+
+The `orders` CHECK for the `cancelled` state becomes:
+
+```
+CHECK status='cancelled' => cancelledAt IS NOT NULL
+                         AND refundTxId IS NOT NULL
+                         AND fulfilledAt IS NULL
+                         AND fulfilledByAdminId IS NULL
+```
+
+`cancelledByAdminId` is no longer required to be non-null; it remains a nullable FK that distinguishes admin-cancel from buyer-self-cancel.
 
 ### Slack Block Kit messages
 
@@ -182,7 +209,7 @@ Invariant safety: `balance` decreased at purchase and increases by the same amou
 
 `orderFulfilledBlocks(order, fulfilledBy)`: same section + context `Fulfilled by <@admin> at <time>`. No actions.
 
-`orderCancelledBlocks(order, cancelledBy)`: same section + context `Cancelled by <@admin>. <price> 🌮 refunded.` No actions.
+`orderCancelledBlocks(order, actor)`: same section + context. When `actor.kind==='admin'`: `Cancelled by <@admin>. <price> 🌮 refunded.` When `actor.kind==='buyer'`: `Cancelled by buyer. <price> 🌮 refunded.` No actions.
 
 ### Bolt action handlers
 
@@ -197,6 +224,7 @@ app.action("order_fulfill", async ({ ack, body, action, client, respond }) => {
   }
   const orderId = (action as { value: string }).value;
   const result = await fulfillOrder(db, { orderId, adminId: body.user.id });
+  // (Slack-button cancel uses the admin variant: `cancelOrder(db, { orderId, actor: { kind: "admin", userId: body.user.id } })`.)
   const order = result.kind === "ok" ? result.order : await getOrderById(db, orderId);
   if (!order) return;
   await client.chat.update({
@@ -226,7 +254,7 @@ Server component. Filter form (status default `pending`, user, item, cursor). Ta
 - Action — `Mark fulfilled` / `Cancel & refund` forms for pending; muted timestamp + actor for terminal states
 - Slack — deep link to `#tacoshop` message when `slackMessageTs` is set
 
-Server actions `fulfillOrderAction` / `cancelOrderAction` wrap the same `fulfillOrder` / `cancelOrder` functions. Best-effort `chat.update` + buyer DM on success.
+Server actions `fulfillOrderAction` / `cancelOrderAction` wrap the same `fulfillOrder` / `cancelOrder` functions. `cancelOrderAction` calls `cancelOrder(db, { orderId, actor: { kind: "admin", userId: adminId } })`. Best-effort `chat.update` + buyer DM on success.
 
 Nav entry `Orders` added to `/admin` layout alongside Users / Items / Activity / Leaderboard.
 
@@ -246,6 +274,16 @@ Nav entry `Orders` added to `/admin` layout alongside Users / Items / Activity /
 
 - Reads session. If unauthenticated, show `Sign in with Slack` CTA → `/api/auth/signin?callbackUrl=/shop`. Catalog still visible (anonymous browse OK).
 - When signed in, header shows `Signed in as <name> · Balance: N 🌮 · Sign out`; each item gets a `Buy for N 🌮` button (disabled if balance < price or out of stock).
+- Above the catalog (signed-in only), a `Your pending orders` panel lists this buyer's orders where `status='pending'`. Each row: item name + price + age + `Cancel` button (uses native `<form>` with `window.confirm()` gate). Submits server action `cancelMyOrder(formData)`. Panel hidden when empty.
+
+### Server action `cancelMyOrder(orderId)`
+
+1. `requireUserId()` from session.
+2. Load order. If missing OR `order.userId !== sessionUserId` OR `order.status !== 'pending'` → throw friendly error mapped to `/shop?err=<code>`.
+3. Call `cancelOrder(db, { orderId, actor: { kind: "buyer", userId: sessionUserId } })`.
+4. Best-effort `chat.update` to `#tacoshop` msg (if `slackMessageTs` set) with `orderCancelledBlocks(order, actor)`.
+5. Best-effort DM to buyer with self-cancel confirmation copy.
+6. `revalidatePath("/shop")`; redirect to `/shop?cancelled=<orderId>`.
 
 ### Feature flag
 
@@ -268,6 +306,8 @@ After production verification, remove the flag in a follow-up commit.
 | Concurrent purchase race (stock=1) | One UPDATE wins on `quantity >= 1`; other returns `out_of_stock`; balance refunded (rolled back) because transaction aborts before debit. |
 | Concurrent purchases on insufficient balance | One UPDATE wins on `balance >= price`; other returns `insufficient`; stock decrement (if any) rolled back. |
 | Double-click fulfill button | `WHERE status='pending'` guard makes second call return `not_pending`; message refreshed to fulfilled state. |
+| Buyer cancels at the same moment admin fulfills/cancels | Both routes hit the `status='pending'` guard inside `cancelOrder`/`fulfillOrder`; whichever transaction commits first wins. The loser receives `not_pending` and surfaces the current state to its UI. |
+| Buyer tries to cancel another user's order via crafted form | Server action denies via `order.userId !== sessionUserId`; defensive inner check in `cancelOrder` also rejects. State unchanged. |
 | Item deleted between catalog render and buy | `unavailable` returned; user sees error banner. |
 | Item price changed between catalog render and buy | The transaction reads `items.priceTacos` inside the purchase tx, so the buyer is charged the CURRENT price (which may differ from the catalog they saw). That `priceTacos` is then snapshotted into `orders.pricePaid` so later admin edits don't rewrite history. UX: rarely matters; if needed later, add a client-side price hash check (out of scope v1). |
 | User signed out mid-flow | Server action throws `unauthenticated`; client redirects to sign-in. |
@@ -296,11 +336,18 @@ After production verification, remove the flag in a follow-up commit.
   - double-fulfill → second `not_pending`.
   - fulfilled → cancel rejected.
 - `tests/integration/cancel.test.ts`
-  - pending → cancelled, balance restored, stock restored, refund grant tx inserted with orderId.
+  - admin cancel: pending → cancelled, balance restored, stock restored, refund grant tx inserted with orderId + `adminUserId=admin` + `cancelledByAdminId=admin`.
+  - buyer self-cancel: pending → cancelled, balance restored, stock restored, refund grant tx inserted with `adminUserId IS NULL` + `cancelledByAdminId IS NULL` + `orderId` set; CHECK satisfied.
   - null-quantity item: stock stays null.
   - cancelled → fulfill rejected.
   - double-cancel rejected.
-  - `balance ≤ receivedTotal` invariant survives.
+  - race admin-cancel vs buyer-cancel: exactly one succeeds; second returns `not_pending`.
+  - `balance ≤ receivedTotal` invariant survives for both actor kinds.
+- `tests/integration/cancel-my-order.test.ts` — server action `cancelMyOrder`:
+  - buyer cancels own pending order → ok.
+  - buyer attempts to cancel another buyer's order → error, state unchanged.
+  - buyer attempts to cancel already-fulfilled order → error, state unchanged.
+  - unauthenticated caller → error.
 - `tests/integration/order-actions-slack.test.ts` — mock Bolt client; simulate block_actions:
   - admin clicks fulfill → state changes, `chat.update` called with fulfilled blocks, buyer DM sent.
   - non-admin clicks fulfill → ephemeral "Not authorized", state unchanged.
@@ -323,6 +370,7 @@ After production verification, remove the flag in a follow-up commit.
   - Add new entries in "Where things live" table (add a shop-order field, change order Slack msg, change cancel rules).
   - Add `SHOP_SELF_SERVE_ENABLED`, `TACOSHOP_CHANNEL_ID` to env discussion.
   - Wrinkle: redeem rows are either admin-originated (adminUserId set, orderId null) OR shop-originated (adminUserId null, orderId set).
+  - Wrinkle: refund grant rows (orderId set) carry `adminUserId IS NULL` for buyer self-cancel and `adminUserId = admin` for admin-cancel. The `orders.cancelledByAdminId` column mirrors this.
 - `docs/slack-setup.md` — enable Interactivity & Shortcuts; Request URL = `/api/slack/events`; invite bot to `#tacoshop`.
 - `README.md` — env table rows; user-facing blurb about self-serve shop.
 - `.env.example` — new vars with comments.
