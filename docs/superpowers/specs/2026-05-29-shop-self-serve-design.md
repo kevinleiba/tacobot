@@ -317,42 +317,119 @@ After production verification, remove the flag in a follow-up commit.
 
 ### Unit
 
-- `tests/unit/format-orders.test.ts` — block kit snapshots for posted/fulfilled/cancelled blocks; DM string assertions.
-- `tests/unit/auth-signin.test.ts` — `signIn` callback: active user → `true`; inactive → `false`; missing id → `false`. Stub `ensureUserExists`.
+- `tests/unit/format-orders.test.ts`
+  - posted blocks: buyer mention, item name, price, two action buttons present with correct `action_id` + `value=<orderId>`, `confirm` payload on cancel button.
+  - fulfilled blocks: no action buttons, `Fulfilled by <@admin>` context line, timestamp present.
+  - cancelled blocks: admin variant `Cancelled by <@admin>` and buyer variant `Cancelled by buyer`; refund amount rendered.
+  - fallback text: posted/fulfilled/cancelled `text` field for Slack notifications stays accurate (Slack uses it for push and accessibility).
+  - DM strings: purchase confirmation includes item + price + balance hint; fulfilled DM names admin; cancelled DM differentiates admin-cancel vs self-cancel.
+  - Currency emoji branding obeys `config.taco.confirmationEmojiName` (so blocks render correctly when `TACO_ALT_EMOJI_NAME` is set).
+- `tests/unit/auth-signin.test.ts`
+  - `signIn` callback: active user in DB → `true`.
+  - inactive user in DB → `false`.
+  - missing slack id in profile → `false`.
+  - admin id (which is also active) → `true`.
+  - user not yet in DB → `ensureUserExists` invoked (mocked) with `(slackId, profile.name)`, callback returns `true`.
 
 ### Integration (PGlite)
 
+- `tests/integration/schema-constraints-orders.test.ts` — direct INSERTs to verify each new/changed CHECK. PGlite raises Postgres CHECK violations the same as production.
+  - `orders` row with `status='pending'` and `fulfilledAt` set → CHECK violation.
+  - `orders` row with `status='fulfilled'` and `fulfilledByAdminId IS NULL` → CHECK violation.
+  - `orders` row with `status='cancelled'` and `refundTxId IS NULL` → CHECK violation.
+  - `orders` row with `status='cancelled'`, `cancelledByAdminId IS NULL`, `refundTxId` set → CHECK passes (self-cancel shape).
+  - `orders` row with `pricePaid <= 0` → CHECK violation.
+- `tests/integration/schema-constraints-transactions.test.ts` — CHECKs on relaxed `shape_and_rule` for redeem + grant.
+  - `redeem` with `adminUserId IS NULL` and `orderId IS NULL` → violation.
+  - `redeem` with `adminUserId IS NULL` and `orderId` set → passes (shop-originated).
+  - `redeem` with `adminUserId` set and `orderId IS NULL` → passes (admin-deducted).
+  - `redeem` with both `adminUserId` AND `orderId` set → violation (mutually exclusive).
+  - `grant` with `adminUserId` set and `orderId IS NULL` → passes (onboarding/normalisation).
+  - `grant` with `adminUserId IS NULL` and `orderId` set → passes (buyer self-cancel refund).
+  - `grant` with `adminUserId` set and `orderId` set → passes (admin cancel refund).
+  - `grant` with both `adminUserId IS NULL` and `orderId IS NULL` → violation.
+  - existing `grant` with non-zero `amount` (positive AND negative) still passes.
 - `tests/integration/purchase.test.ts`
-  - happy path: balance + stock decrement, order + redeem tx inserted, order.redeemTxId set.
-  - insufficient balance: no row changes.
-  - out of stock (sequential): one ok, next out_of_stock.
-  - inactive item: unavailable.
-  - null-quantity item: ok, quantity stays null.
+  - happy path: `balance -= price`, `quantity -= 1`, order row inserted with `status='pending'` + snapshots (`itemNameSnap`, `descriptionSnap`, `redemptionInstructionsSnap`, `pricePaid`), redeem tx inserted with `orderId` + `adminUserId IS NULL`, `order.redeemTxId` patched.
+  - boundary: `balance === priceTacos` → ok, balance ends at 0.
+  - `balance === 0` → `insufficient`, no row changes anywhere.
+  - insufficient balance (general): no row changes (assert users, items, orders, transactions counts unchanged).
+  - out of stock (sequential): first ok, second `out_of_stock`, second's balance debit rolled back (assert balance unchanged for second buyer).
+  - inactive item → `unavailable`.
+  - null-quantity item: ok, `items.quantity` stays null after purchase.
+  - inactive (`isActive=false`) buyer → server action throws `unauthenticated_or_inactive` BEFORE entering `purchase()` (assert no order created).
+  - item price changed between catalog render and purchase: caller passes stale price hint (if we adopt a hint param) OR test confirms the buyer is charged the CURRENT price and `pricePaid` snapshots the current price (not the stale catalog price).
+  - snapshot fields stay frozen after subsequent item edits: update `items.name`, `items.description`, `items.redemptionInstructions`, `items.priceTacos`; existing order row's snapshots unchanged.
+  - returns from `purchase()` carry the inserted order so caller can immediately post to Slack without a re-read.
 - `tests/integration/purchase-concurrent.test.ts` (`withCleanDb`)
-  - stock=1, two parallel purchases → one ok, one out_of_stock; balance only debited once.
-  - balance=N, price=N, two parallel purchases → one ok, one insufficient.
+  - stock=1, two parallel purchases → one ok, one out_of_stock; `users.balance` debited exactly once for the buyer who succeeded; `items.quantity` ends at 0 (not -1).
+  - stock=2, three parallel purchases → two ok, one out_of_stock; `items.quantity` ends at 0.
+  - balance=N, price=N (two distinct buyers buying the same finite-stock item): standard happy path — one ok per buyer (stock permitting).
+  - balance=N, price=N, single buyer, two parallel purchases → one ok, one insufficient; no double-debit.
 - `tests/integration/fulfill.test.ts`
-  - pending → fulfilled.
-  - double-fulfill → second `not_pending`.
+  - pending → fulfilled; `fulfilledAt`, `fulfilledByAdminId` populated.
+  - balances + stock untouched by fulfill (assert pre/post values).
+  - **no new transactions row** is inserted by fulfill (ledger invariant — fulfill is a state change, not a money move).
+  - double-fulfill → second call `not_pending`; original `fulfilledByAdminId` preserved.
   - fulfilled → cancel rejected.
+  - parallel fulfill from two admins → exactly one wins (`status='pending'` guard).
 - `tests/integration/cancel.test.ts`
-  - admin cancel: pending → cancelled, balance restored, stock restored, refund grant tx inserted with orderId + `adminUserId=admin` + `cancelledByAdminId=admin`.
-  - buyer self-cancel: pending → cancelled, balance restored, stock restored, refund grant tx inserted with `adminUserId IS NULL` + `cancelledByAdminId IS NULL` + `orderId` set; CHECK satisfied.
-  - null-quantity item: stock stays null.
+  - admin cancel: pending → cancelled; balance + stock restored to pre-purchase values; refund grant tx inserted with `orderId` + `adminUserId=admin` + `cancelledByAdminId=admin`; `order.refundTxId` patched.
+  - buyer self-cancel: pending → cancelled; refund grant tx with `adminUserId IS NULL` + `cancelledByAdminId IS NULL` + `orderId` set; CHECK satisfied (proven via integration with constraint tests above).
+  - defensive inner check: `cancelOrder` with `actor.kind='buyer'` and `actor.userId !== order.userId` → rejected without state change (matches outer auth).
+  - null-quantity item: stock stays null after cancel.
+  - cancel after item deactivated (`items.isActive=false` set between purchase and cancel): cancel still succeeds; stock still restored; FK reference intact.
   - cancelled → fulfill rejected.
   - double-cancel rejected.
-  - race admin-cancel vs buyer-cancel: exactly one succeeds; second returns `not_pending`.
-  - `balance ≤ receivedTotal` invariant survives for both actor kinds.
+  - race admin-cancel vs buyer-cancel: exactly one succeeds; second returns `not_pending`; refund posted exactly once.
+  - race buyer-cancel vs admin-fulfill: exactly one transition wins; loser sees `not_pending`; no refund + fulfilled at once.
+  - `balance ≤ receivedTotal` invariant survives for both actor kinds (assert constraint not violated via direct query).
+  - ledger invariant: after a purchase + cancel cycle, the user's `receivedTotal` is unchanged, `balance` equals pre-purchase, and the ledger has exactly two new rows (redeem + grant) summing to net zero for that user.
 - `tests/integration/cancel-my-order.test.ts` — server action `cancelMyOrder`:
-  - buyer cancels own pending order → ok.
+  - buyer cancels own pending order → ok; identical end-state to admin cancel except for `adminUserId`/`cancelledByAdminId` nullness.
   - buyer attempts to cancel another buyer's order → error, state unchanged.
   - buyer attempts to cancel already-fulfilled order → error, state unchanged.
-  - unauthenticated caller → error.
-- `tests/integration/order-actions-slack.test.ts` — mock Bolt client; simulate block_actions:
-  - admin clicks fulfill → state changes, `chat.update` called with fulfilled blocks, buyer DM sent.
-  - non-admin clicks fulfill → ephemeral "Not authorized", state unchanged.
-  - admin clicks cancel on already-fulfilled order → ephemeral msg, `chat.update` refresh.
-- `tests/integration/admin-orders-actions.test.ts` — web server actions: admin gate, fulfill/cancel paths, error mapping.
+  - buyer attempts to cancel an already-cancelled order → error, state unchanged.
+  - unauthenticated caller → error before any DB read.
+  - feature flag `SHOP_SELF_SERVE_ENABLED=false` → action throws `disabled` regardless of session.
+  - best-effort `chat.update` failure: throw mocked from Bolt client; DB end-state still cancelled; action does not re-raise.
+- `tests/integration/order-actions-slack.test.ts` — mock Bolt client; simulate block_actions payload via the receiver:
+  - admin clicks fulfill on pending → state fulfilled, `chat.update` called with fulfilled blocks, buyer DM sent.
+  - admin clicks cancel on pending → state cancelled, `chat.update` called with admin-variant cancelled blocks, buyer DM sent (refund copy).
+  - non-admin clicks fulfill → ephemeral "Not authorized" via `respond`, state unchanged, no `chat.update`.
+  - non-admin clicks cancel → ephemeral "Not authorized", state unchanged.
+  - admin clicks fulfill on already-cancelled order → ephemeral message describing current state, `chat.update` refresh with cancelled blocks (no state change).
+  - admin clicks cancel on already-fulfilled order → ephemeral message, `chat.update` refresh with fulfilled blocks.
+  - malformed `action.value` (not a uuid, or unknown id): handler returns gracefully with ephemeral error; no exception escapes Bolt.
+  - `chat.update` API failure mocked: handler still acks within 3s and DB transition stands (assert via direct read).
+- `tests/integration/receiver-interactivity.test.ts` — covers the open question about `AppRouterReceiver` parsing interactivity payloads.
+  - POST with `Content-Type: application/x-www-form-urlencoded` body `payload=<JSON>` + valid Slack signature → receiver routes to Bolt; registered `app.action("order_fulfill", ...)` callback fires.
+  - Same request with invalid signature → 401, no handler dispatched.
+  - Replay attack (timestamp older than 5 min) → 401.
+  - Receiver does NOT call `req.json()` before HMAC verify (regression guard — keep raw body).
+- `tests/integration/admin-orders-actions.test.ts` — web server actions on `/admin/orders`:
+  - admin session: fulfill action → state changes, `chat.update` invoked, buyer DM attempted.
+  - admin session: cancel action → state cancelled, refund grant inserted with `adminUserId=admin`, `chat.update` invoked.
+  - non-admin session calling admin action → throws `unauthorized`, no state change.
+  - unauthenticated session → throws `unauthorized`.
+  - `fulfillOrderAction` on already-fulfilled order → throws `already_fulfilled` (or maps to `not_pending`); UI error path covered.
+  - `cancelOrderAction` on already-cancelled order → throws `already_cancelled`.
+- `tests/integration/admin-orders-list.test.ts` — `listOrders` query helper:
+  - filter by `status='pending'` returns only pending.
+  - filter by `userId` returns only that buyer's orders.
+  - filter by `itemId` returns only that item's orders.
+  - cursor pagination returns stable ordering and no duplicates across pages.
+  - default ordering: newest first by `createdAt`.
+- `tests/integration/shop-page-auth.test.ts` — server-component rendering of `/shop`:
+  - anonymous viewer: catalog renders, sign-in CTA present, no `Buy` buttons, no "Your pending orders" panel.
+  - signed-in non-admin viewer: catalog + Buy buttons + balance header; pending-orders panel hidden when empty.
+  - signed-in viewer with a pending order: panel lists the order with Cancel button.
+  - signed-in viewer with an out-of-stock item: corresponding Buy button is disabled.
+  - signed-in viewer whose balance < item price: Buy button disabled (or marked "insufficient").
+  - feature flag off: anonymous + signed-in viewers both see the legacy HR-contact catalog; no Buy buttons; no panel.
+- `tests/integration/feature-flag.test.ts`
+  - `SHOP_SELF_SERVE_ENABLED=false`: `buyItem` server action throws `disabled`; `cancelMyOrder` throws `disabled`; bot does NOT post to `#tacoshop` even if other paths somehow create an order (sanity).
+  - `SHOP_SELF_SERVE_ENABLED=true`: end-to-end purchase posts to Slack channel (mocked).
 
 ### Manual smoke (added to `docs/operations.md`)
 
