@@ -21,6 +21,7 @@ In:
 - Slack `#tacoshop` channel receives a Block Kit message per new order with `Mark fulfilled` and `Cancel & refund` buttons; admin-gated.
 - `/admin/orders` web page with the same fulfill/cancel actions.
 - Buyer self-cancel of own pending orders from `/shop` (web only; no Slack button).
+- Replace existing HR-DM contact line on `/shop` with a `#tacoshop` channel link as the async fallback path.
 - Feature flag `SHOP_SELF_SERVE_ENABLED` for staged rollout.
 
 Out:
@@ -43,6 +44,7 @@ Out:
 | Admin web UI | `/admin/orders` list + actions | Belt & suspenders alongside Slack buttons; same underlying functions. |
 | Cancel semantics | Refund balance + restore stock | Append-only `grant` row; predictable. |
 | Buyer self-cancel | Allowed while `status='pending'`, web only (`/shop`) | Same `cancelOrder()` core; gate on `actor.userId === order.userId`; no Slack-side button needed. |
+| Async fallback on `/shop` | Replace HR-DM line with `#tacoshop` channel link | One canonical async path; admins already watch the channel for self-serve orders. HR contact retires from this surface. |
 | Data model | New `orders` table; `transactions` keeps ledger via `orderId` FK | Clean separation: state machine vs. ledger. |
 | Admin manual deduct | Keep current `/admin/users` deduct form | Offline / in-person redemption escape hatch. |
 | Channel config | Required env `TACOSHOP_CHANNEL_ID` | Matches existing env pattern; fail fast if unset. |
@@ -275,6 +277,10 @@ Nav entry `Orders` added to `/admin` layout alongside Users / Items / Activity /
 - Reads session. If unauthenticated, show `Sign in with Slack` CTA → `/api/auth/signin?callbackUrl=/shop`. Catalog still visible (anonymous browse OK).
 - When signed in, header shows `Signed in as <name> · Balance: N 🌮 · Sign out`; each item gets a `Buy for N 🌮` button (disabled if balance < price or out of stock).
 - Above the catalog (signed-in only), a `Your pending orders` panel lists this buyer's orders where `status='pending'`. Each row: item name + price + age + `Cancel` button (uses native `<form>` with `window.confirm()` gate). Submits server action `cancelMyOrder(formData)`. Panel hidden when empty.
+- Header copy on `/shop` advertises the alternative async path: replace the existing `DM @HR to redeem` line with `Prefer Slack? Post your order in #tacoshop`. The link uses Slack's `slack://channel?team={teamId}&id={TACOSHOP_CHANNEL_ID}` deep-link format with an HTTPS fallback `https://slack.com/app_redirect?channel={TACOSHOP_CHANNEL_ID}` so it opens reliably from both desktop and web Slack. The current HR contact line (and the `HR_SLACK_ID` / `HR_SLACK_HANDLE` env vars in this surface) is removed — `#tacoshop` is now the single canonical async fallback.
+  - Anonymous viewers also see this line (no auth required to read it; clicking opens Slack).
+  - Slack workspace deep-link team id: prefer not to hardcode. If we don't have `team_id` in config, omit the `slack://` URL and use only the `slack.com/app_redirect` form, which works without a team id.
+  - Channel name (text) defaults to `#tacoshop`. If you ever rename the channel, swap the literal in `lib/slack/format.ts` (web copy helper) — channel id stays the same in `TACOSHOP_CHANNEL_ID`.
 
 ### Server action `cancelMyOrder(orderId)`
 
@@ -421,12 +427,13 @@ After production verification, remove the flag in a follow-up commit.
   - cursor pagination returns stable ordering and no duplicates across pages.
   - default ordering: newest first by `createdAt`.
 - `tests/integration/shop-page-auth.test.ts` — server-component rendering of `/shop`:
-  - anonymous viewer: catalog renders, sign-in CTA present, no `Buy` buttons, no "Your pending orders" panel.
-  - signed-in non-admin viewer: catalog + Buy buttons + balance header; pending-orders panel hidden when empty.
+  - anonymous viewer: catalog renders, sign-in CTA present, no `Buy` buttons, no "Your pending orders" panel; `#tacoshop` fallback link rendered with correct `slack.com/app_redirect?channel=<TACOSHOP_CHANNEL_ID>` href.
+  - signed-in non-admin viewer: catalog + Buy buttons + balance header; pending-orders panel hidden when empty; `#tacoshop` fallback link present.
   - signed-in viewer with a pending order: panel lists the order with Cancel button.
   - signed-in viewer with an out-of-stock item: corresponding Buy button is disabled.
   - signed-in viewer whose balance < item price: Buy button disabled (or marked "insufficient").
-  - feature flag off: anonymous + signed-in viewers both see the legacy HR-contact catalog; no Buy buttons; no panel.
+  - HR contact line is NOT present anywhere on `/shop` (regression guard for the replacement).
+  - feature flag off: anonymous + signed-in viewers both see the legacy HR-contact catalog; no Buy buttons; no panel. (Pre-rollout snapshot; remove this case when the flag is retired.)
 - `tests/integration/feature-flag.test.ts`
   - `SHOP_SELF_SERVE_ENABLED=false`: `buyItem` server action throws `disabled`; `cancelMyOrder` throws `disabled`; bot does NOT post to `#tacoshop` even if other paths somehow create an order (sanity).
   - `SHOP_SELF_SERVE_ENABLED=true`: end-to-end purchase posts to Slack channel (mocked).
@@ -445,7 +452,7 @@ After production verification, remove the flag in a follow-up commit.
   - Add `orders` table to invariants list (state machine, refund mechanics, snapshot fields).
   - Add new file paths to repo layout.
   - Add new entries in "Where things live" table (add a shop-order field, change order Slack msg, change cancel rules).
-  - Add `SHOP_SELF_SERVE_ENABLED`, `TACOSHOP_CHANNEL_ID` to env discussion.
+  - Add `SHOP_SELF_SERVE_ENABLED`, `TACOSHOP_CHANNEL_ID` to env discussion. Note `HR_SLACK_ID` / `HR_SLACK_HANDLE` were only consumed by `/shop`; they become unused once the flag is on. Retire both env vars (config + `.env.example` + README + `lib/config.ts` `hr.*` getters) in the same follow-up PR that removes the feature flag.
   - Wrinkle: redeem rows are either admin-originated (adminUserId set, orderId null) OR shop-originated (adminUserId null, orderId set).
   - Wrinkle: refund grant rows (orderId set) carry `adminUserId IS NULL` for buyer self-cancel and `adminUserId = admin` for admin-cancel. The `orders.cancelledByAdminId` column mirrors this.
 - `docs/slack-setup.md` — enable Interactivity & Shortcuts; Request URL = `/api/slack/events`; invite bot to `#tacoshop`.
