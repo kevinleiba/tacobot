@@ -27,11 +27,24 @@ export class AppRouterReceiver implements Receiver {
       return new Response("invalid signature", { status: 401 });
     }
 
+    // Slack sends events as JSON, but interactivity payloads (block_actions,
+    // shortcuts, view_submission, etc.) arrive as
+    // `application/x-www-form-urlencoded` with the JSON sitting under a single
+    // `payload` field. Pick the decoder by content-type so HMAC stays valid
+    // (we still verified against rawBody above).
     let parsed: unknown;
+    const contentType = req.headers.get("content-type") ?? "";
     try {
-      parsed = JSON.parse(rawBody);
+      if (contentType.includes("application/x-www-form-urlencoded")) {
+        const form = new URLSearchParams(rawBody);
+        const payload = form.get("payload");
+        if (!payload) return new Response("missing payload", { status: 400 });
+        parsed = JSON.parse(payload);
+      } else {
+        parsed = JSON.parse(rawBody);
+      }
     } catch {
-      return new Response("invalid json", { status: 400 });
+      return new Response("invalid body", { status: 400 });
     }
 
     // URL-verification handshake: short-circuit before processEvent.

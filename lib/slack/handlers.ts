@@ -3,6 +3,7 @@ import { registerMessageHandler } from "./handlers/message";
 import { registerReactionHandler } from "./handlers/reaction";
 import { registerCommandHandlers } from "./handlers/commands";
 import { registerUserSyncHandlers } from "./handlers/userSync";
+import { registerOrderActionHandlers } from "./handlers/orderActions";
 
 let registered = false;
 
@@ -18,4 +19,5 @@ export function registerAllHandlers(): void {
   registerReactionHandler(app);
   registerCommandHandlers(app);
   registerUserSyncHandlers(app);
+  registerOrderActionHandlers(app);
 }

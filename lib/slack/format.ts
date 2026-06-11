@@ -100,3 +100,153 @@ export function reactionRemovedRecipientMessage(
   const emoji = `:${emojiName}:`;
   return `${emoji} <@${reactorId}> removed their ${emoji} reaction in <#${channelId}>; ${amount} taco${amount === 1 ? "" : "s"} you received from them ${amount === 1 ? "was" : "were"} taken back.`;
 }
+
+// =================== Shop order block kit + DM strings ====================
+
+export type OrderBlocksInput = {
+  orderId: string;
+  buyerUserId: string;
+  itemName: string;
+  price: number;
+  imageUrl?: string | null;
+  redemptionInstructions?: string | null;
+  emojiName: string;
+};
+
+const shortOrderId = (id: string) => id.slice(0, 8);
+
+function headerSection(input: OrderBlocksInput) {
+  const accessory = input.imageUrl
+    ? {
+        type: "image" as const,
+        image_url: input.imageUrl,
+        alt_text: input.itemName,
+      }
+    : undefined;
+  return {
+    type: "section" as const,
+    text: {
+      type: "mrkdwn" as const,
+      text: `<@${input.buyerUserId}> ordered *${input.itemName}* for *${input.price} :${input.emojiName}:*`,
+    },
+    ...(accessory ? { accessory } : {}),
+  };
+}
+
+export function orderPostedBlocks(
+  input: OrderBlocksInput,
+): { blocks: unknown[]; text: string } {
+  const text = `<@${input.buyerUserId}> ordered ${input.itemName} for ${input.price} :${input.emojiName}:`;
+  const instructions = input.redemptionInstructions
+    ? ` · ${input.redemptionInstructions}`
+    : "";
+  const blocks: unknown[] = [
+    headerSection(input),
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `Order \`${shortOrderId(input.orderId)}\` · pending${instructions}`,
+        },
+      ],
+    },
+    {
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: "order_fulfill",
+          value: input.orderId,
+          text: { type: "plain_text", text: "Mark fulfilled" },
+          style: "primary",
+        },
+        {
+          type: "button",
+          action_id: "order_cancel",
+          value: input.orderId,
+          text: { type: "plain_text", text: "Cancel & refund" },
+          style: "danger",
+          confirm: {
+            title: { type: "plain_text", text: "Cancel order?" },
+            text: {
+              type: "mrkdwn",
+              text: `Refund *${input.price} :${input.emojiName}:* to <@${input.buyerUserId}>?`,
+            },
+            confirm: { type: "plain_text", text: "Cancel order" },
+            deny: { type: "plain_text", text: "Keep" },
+          },
+        },
+      ],
+    },
+  ];
+  return { blocks, text };
+}
+
+export function orderFulfilledBlocks(
+  input: OrderBlocksInput & { fulfilledByAdminId: string },
+): { blocks: unknown[]; text: string } {
+  const text = `Order ${input.itemName} fulfilled`;
+  const blocks: unknown[] = [
+    headerSection(input),
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `Order \`${shortOrderId(input.orderId)}\` · ✅ fulfilled by <@${input.fulfilledByAdminId}>`,
+        },
+      ],
+    },
+  ];
+  return { blocks, text };
+}
+
+export function orderCancelledBlocks(
+  input: OrderBlocksInput & { cancelledByAdminId: string | null },
+): { blocks: unknown[]; text: string } {
+  const by = input.cancelledByAdminId
+    ? `<@${input.cancelledByAdminId}>`
+    : "buyer";
+  const text = `Order ${input.itemName} cancelled`;
+  const blocks: unknown[] = [
+    headerSection(input),
+    {
+      type: "context",
+      elements: [
+        {
+          type: "mrkdwn",
+          text: `Order \`${shortOrderId(input.orderId)}\` · ❌ cancelled by ${by} · ${input.price} :${input.emojiName}: refunded`,
+        },
+      ],
+    },
+  ];
+  return { blocks, text };
+}
+
+export function purchaseConfirmationDm(
+  itemName: string,
+  price: number,
+  balanceAfter: number,
+  emojiName: string,
+): string {
+  return `:${emojiName}: You ordered *${itemName}* for *${price}*. Balance: *${balanceAfter}*.`;
+}
+
+export function orderFulfilledDm(
+  itemName: string,
+  adminId: string,
+  emojiName: string,
+): string {
+  return `:${emojiName}: Your *${itemName}* order was fulfilled by <@${adminId}>.`;
+}
+
+export function orderCancelledDm(
+  itemName: string,
+  price: number,
+  cancelledByAdminId: string | null,
+  emojiName: string,
+): string {
+  const by = cancelledByAdminId ? `<@${cancelledByAdminId}>` : "you";
+  return `:${emojiName}: Your *${itemName}* order was cancelled by ${by}. *${price}* refunded.`;
+}
