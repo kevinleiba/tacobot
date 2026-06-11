@@ -29,6 +29,13 @@
       "when": 1777921418943,
       "tag": "0003_workable_wallow",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1781186372360,
+      "tag": "0004_tiny_wonder_man",
+      "breakpoints": true
     }
   ]
 }
