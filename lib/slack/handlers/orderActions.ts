@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db/client";
 import { orders, items } from "@/lib/db/schema";
 import type { Order } from "@/lib/db/schema";
+import type { DbLike } from "@/lib/db/types";
 import { fulfillOrder } from "@/lib/shop/fulfill";
 import { cancelOrder } from "@/lib/shop/cancel";
 import { config } from "@/lib/config";
@@ -21,7 +22,38 @@ type OrderContext = {
   redemptionInstructions: string | null;
 };
 
-async function loadOrderContext(orderId: string): Promise<OrderContext | null> {
+export type SlackClient = {
+  chat: {
+    update: (args: {
+      channel: string;
+      ts: string;
+      text: string;
+      blocks: unknown[];
+    }) => Promise<unknown>;
+    postMessage: (args: {
+      channel: string;
+      text: string;
+    }) => Promise<unknown>;
+  };
+};
+
+export type RespondFn = (args: {
+  response_type: "ephemeral";
+  text: string;
+}) => Promise<unknown>;
+
+export type HandlerDeps = {
+  db: DbLike;
+  client: SlackClient;
+  respond: RespondFn;
+  adminSlackIds: string[];
+  emojiName: string;
+};
+
+async function loadOrderContext(
+  db: DbLike,
+  orderId: string,
+): Promise<OrderContext | null> {
   const [row] = await db
     .select({
       order: orders,
@@ -35,7 +67,7 @@ async function loadOrderContext(orderId: string): Promise<OrderContext | null> {
   return row ?? null;
 }
 
-function blocksFor(ctx: OrderContext) {
+function blocksFor(ctx: OrderContext, emojiName: string) {
   const base = {
     orderId: ctx.order.id,
     buyerUserId: ctx.order.userId,
@@ -43,7 +75,7 @@ function blocksFor(ctx: OrderContext) {
     price: ctx.order.pricePaid,
     imageUrl: ctx.imageUrl,
     redemptionInstructions: ctx.redemptionInstructions,
-    emojiName: config.taco.confirmationEmojiName,
+    emojiName,
   };
   if (ctx.order.status === "fulfilled") {
     return orderFulfilledBlocks({
@@ -60,100 +92,139 @@ function blocksFor(ctx: OrderContext) {
   return orderPostedBlocks(base);
 }
 
-export function registerOrderActionHandlers(app: App): void {
-  app.action("order_fulfill", async ({ ack, body, action, client, respond }) => {
-    await ack();
-    const slackUserId = (body as { user: { id: string } }).user.id;
-    if (!config.admin.slackIds.includes(slackUserId)) {
-      await respond({ response_type: "ephemeral", text: "Not authorized." });
-      return;
-    }
-    const orderId = (action as { value: string }).value;
-    const result = await fulfillOrder(db, { orderId, adminId: slackUserId });
-
-    const ctx = await loadOrderContext(orderId);
-    if (!ctx) return;
-    const view = blocksFor(ctx);
+/**
+ * Core handler for the #tacoshop "Mark fulfilled" button. Extracted from the
+ * Bolt registration so unit tests can drive it with a mocked SlackClient.
+ */
+export async function handleOrderFulfillAction(
+  deps: HandlerDeps,
+  input: { slackUserId: string; orderId: string },
+): Promise<void> {
+  if (!deps.adminSlackIds.includes(input.slackUserId)) {
+    await deps.respond({ response_type: "ephemeral", text: "Not authorized." });
+    return;
+  }
+  const result = await fulfillOrder(deps.db, {
+    orderId: input.orderId,
+    adminId: input.slackUserId,
+  });
+  const ctx = await loadOrderContext(deps.db, input.orderId);
+  if (!ctx) return;
+  const view = blocksFor(ctx, deps.emojiName);
+  if (ctx.order.slackChannelId && ctx.order.slackMessageTs) {
     try {
-      if (ctx.order.slackChannelId && ctx.order.slackMessageTs) {
-        await client.chat.update({
-          channel: ctx.order.slackChannelId,
-          ts: ctx.order.slackMessageTs,
-          text: view.text,
-          blocks: view.blocks,
-        } as Parameters<typeof client.chat.update>[0]);
-      }
+      await deps.client.chat.update({
+        channel: ctx.order.slackChannelId,
+        ts: ctx.order.slackMessageTs,
+        text: view.text,
+        blocks: view.blocks,
+      });
     } catch (err) {
       console.error("[orderActions] chat.update failed", err);
     }
-    if (result.kind === "ok") {
-      try {
-        await client.chat.postMessage({
-          channel: ctx.order.userId,
-          text: orderFulfilledDm(
-            ctx.itemName,
-            slackUserId,
-            config.taco.confirmationEmojiName,
-          ),
-        });
-      } catch (err) {
-        console.error("[orderActions] fulfill DM failed", err);
-      }
-    } else {
-      await respond({
-        response_type: "ephemeral",
-        text: `Order is already ${ctx.order.status}.`,
+  }
+  if (result.kind === "ok") {
+    try {
+      await deps.client.chat.postMessage({
+        channel: ctx.order.userId,
+        text: orderFulfilledDm(ctx.itemName, input.slackUserId, deps.emojiName),
       });
+    } catch (err) {
+      console.error("[orderActions] fulfill DM failed", err);
     }
+  } else {
+    await deps.respond({
+      response_type: "ephemeral",
+      text: `Order is already ${ctx.order.status}.`,
+    });
+  }
+}
+
+/**
+ * Core handler for the #tacoshop "Cancel & refund" button. Same shape as
+ * `handleOrderFulfillAction`.
+ */
+export async function handleOrderCancelAction(
+  deps: HandlerDeps,
+  input: { slackUserId: string; orderId: string },
+): Promise<void> {
+  if (!deps.adminSlackIds.includes(input.slackUserId)) {
+    await deps.respond({ response_type: "ephemeral", text: "Not authorized." });
+    return;
+  }
+  const result = await cancelOrder(deps.db, {
+    orderId: input.orderId,
+    actor: { kind: "admin", userId: input.slackUserId },
+  });
+  const ctx = await loadOrderContext(deps.db, input.orderId);
+  if (!ctx) return;
+  const view = blocksFor(ctx, deps.emojiName);
+  if (ctx.order.slackChannelId && ctx.order.slackMessageTs) {
+    try {
+      await deps.client.chat.update({
+        channel: ctx.order.slackChannelId,
+        ts: ctx.order.slackMessageTs,
+        text: view.text,
+        blocks: view.blocks,
+      });
+    } catch (err) {
+      console.error("[orderActions] chat.update failed", err);
+    }
+  }
+  if (result.kind === "ok") {
+    try {
+      await deps.client.chat.postMessage({
+        channel: ctx.order.userId,
+        text: orderCancelledDm(
+          ctx.itemName,
+          ctx.order.pricePaid,
+          input.slackUserId,
+          deps.emojiName,
+        ),
+      });
+    } catch (err) {
+      console.error("[orderActions] cancel DM failed", err);
+    }
+  } else if (result.kind === "not_pending") {
+    await deps.respond({
+      response_type: "ephemeral",
+      text: `Order is already ${ctx.order.status}.`,
+    });
+  }
+}
+
+export function registerOrderActionHandlers(app: App): void {
+  app.action("order_fulfill", async ({ ack, body, action, client, respond }) => {
+    await ack();
+    await handleOrderFulfillAction(
+      {
+        db,
+        client: client as unknown as SlackClient,
+        respond: respond as unknown as RespondFn,
+        adminSlackIds: config.admin.slackIds,
+        emojiName: config.taco.confirmationEmojiName,
+      },
+      {
+        slackUserId: (body as { user: { id: string } }).user.id,
+        orderId: (action as { value: string }).value,
+      },
+    );
   });
 
   app.action("order_cancel", async ({ ack, body, action, client, respond }) => {
     await ack();
-    const slackUserId = (body as { user: { id: string } }).user.id;
-    if (!config.admin.slackIds.includes(slackUserId)) {
-      await respond({ response_type: "ephemeral", text: "Not authorized." });
-      return;
-    }
-    const orderId = (action as { value: string }).value;
-    const result = await cancelOrder(db, {
-      orderId,
-      actor: { kind: "admin", userId: slackUserId },
-    });
-
-    const ctx = await loadOrderContext(orderId);
-    if (!ctx) return;
-    const view = blocksFor(ctx);
-    try {
-      if (ctx.order.slackChannelId && ctx.order.slackMessageTs) {
-        await client.chat.update({
-          channel: ctx.order.slackChannelId,
-          ts: ctx.order.slackMessageTs,
-          text: view.text,
-          blocks: view.blocks,
-        } as Parameters<typeof client.chat.update>[0]);
-      }
-    } catch (err) {
-      console.error("[orderActions] chat.update failed", err);
-    }
-    if (result.kind === "ok") {
-      try {
-        await client.chat.postMessage({
-          channel: ctx.order.userId,
-          text: orderCancelledDm(
-            ctx.itemName,
-            ctx.order.pricePaid,
-            slackUserId,
-            config.taco.confirmationEmojiName,
-          ),
-        });
-      } catch (err) {
-        console.error("[orderActions] cancel DM failed", err);
-      }
-    } else if (result.kind === "not_pending") {
-      await respond({
-        response_type: "ephemeral",
-        text: `Order is already ${ctx.order.status}.`,
-      });
-    }
+    await handleOrderCancelAction(
+      {
+        db,
+        client: client as unknown as SlackClient,
+        respond: respond as unknown as RespondFn,
+        adminSlackIds: config.admin.slackIds,
+        emojiName: config.taco.confirmationEmojiName,
+      },
+      {
+        slackUserId: (body as { user: { id: string } }).user.id,
+        orderId: (action as { value: string }).value,
+      },
+    );
   });
 }
