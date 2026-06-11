@@ -1,0 +1,2 @@
+ALTER TABLE "items" DROP CONSTRAINT "items_quantity_positive";--> statement-breakpoint
+ALTER TABLE "items" ADD CONSTRAINT "items_quantity_nonneg" CHECK ("items"."quantity" IS NULL OR "items"."quantity" >= 0);

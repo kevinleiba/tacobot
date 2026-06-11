@@ -56,9 +56,11 @@ export const items = pgTable(
   },
   (t) => ({
     pricePositive: check("items_price_positive", sql`${t.priceTacos} > 0`),
-    quantityPositive: check(
-      "items_quantity_positive",
-      sql`${t.quantity} IS NULL OR ${t.quantity} > 0`,
+    // `quantity` can be NULL (unlimited stock) or >= 0. Zero means "sold out
+    // but still active" — the row stays so a cancel can restore stock.
+    quantityNonNegative: check(
+      "items_quantity_nonneg",
+      sql`${t.quantity} IS NULL OR ${t.quantity} >= 0`,
     ),
     activeNameUnique: uniqueIndex("items_active_name_unique")
       .on(sql`lower(${t.name})`)
