@@ -67,6 +67,14 @@ export default async function ShopPage({
   const channelLink = flagOn
     ? `https://slack.com/app_redirect?channel=${config.tacoshopChannelId}`
     : null;
+  // Legacy HR contact path — shown only when the self-serve flag is off so
+  // /shop keeps its pre-feature instructions during the rollout window.
+  const hrId = !flagOn ? config.hr.slackId : undefined;
+  const hrHandle = !flagOn ? config.hr.slackHandle : undefined;
+  const hrLabel = hrHandle ? `@${hrHandle}` : "HR";
+  const hrLink = hrId
+    ? `https://slack.com/app_redirect?channel=${hrId}`
+    : null;
 
   const errStr = typeof sp.err === "string" ? sp.err : undefined;
   const okStr = typeof sp.ok === "string" ? sp.ok : undefined;
@@ -104,6 +112,23 @@ export default async function ShopPage({
                 Post your order in #tacoshop
               </a>
               .
+            </>
+          ) : null}
+          {!flagOn ? (
+            <>
+              To redeem an item, DM{" "}
+              {hrLink ? (
+                <a
+                  href={hrLink}
+                  className="font-medium text-amber-700 hover:underline"
+                >
+                  {hrLabel}
+                </a>
+              ) : (
+                hrLabel
+              )}{" "}
+              with the item name. Check your balance by DMing{" "}
+              <code>@tacobot</code> the word <code>balance</code>.
             </>
           ) : null}
         </p>
