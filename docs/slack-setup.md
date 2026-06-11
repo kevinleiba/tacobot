@@ -99,7 +99,37 @@ The bot must be a member of every channel in `TACO_CHANNELS`. Slack only deliver
 
 Set `ADMIN_SLACK_IDS` to the comma-separated Slack user IDs that should have access to `/admin/*` pages. Adding/removing an admin is an env-var change + redeploy.
 
-## 9. (Optional) Custom currency emoji
+## 9. Interactivity & Shortcuts (self-serve shop)
+
+Required for the `#tacoshop` order announcement message buttons (`Mark fulfilled`, `Cancel & refund`).
+
+**Interactivity & Shortcuts** → toggle on. Set:
+
+- Request URL: `https://tacobot.weblab.technology/api/slack/events`
+
+Same URL as the events endpoint — the App Router receiver routes both JSON events and form-urlencoded interactivity payloads.
+
+Save changes.
+
+## 10. `#tacoshop` channel
+
+Create or pick a Slack channel for order announcements (e.g. `#tacoshop`). Invite the bot:
+
+```
+/invite @tacobot
+```
+
+Set `TACOSHOP_CHANNEL_ID` to its channel ID (right-click → View channel details → ID at the bottom).
+
+Then flip the feature flag to enable self-serve shopping:
+
+```bash
+SHOP_SELF_SERVE_ENABLED=true
+```
+
+With the flag off, `/shop` keeps its legacy catalog (no Buy buttons, no #tacoshop link).
+
+## 11. (Optional) Custom currency emoji
 
 Tacobot always accepts `:taco:`. To additionally accept a workspace-custom emoji (for branded recognition like `:wltaco:`), set `TACO_ALT_EMOJI_NAME` to the emoji **name only** — no colons.
 

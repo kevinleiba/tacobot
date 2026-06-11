@@ -11,7 +11,7 @@ Give 🌮 reactions to teammates in `#taqueria`. Every employee has a daily allo
 - **Daily allowance**: each user gets `TACO_DAILY_ALLOWANCE` tacos to give per day, auto-reset at 00:00 UTC by a Vercel cron.
 - **Two counters per user**: lifetime `received_total` (for the leaderboard) and current `balance` (redeemable).
 - **DM commands**: `score`, `balance`, `left`, `shop`, `help` — English and French aliases.
-- **Public shop**: `/shop` lists active items with prices, descriptions, and a "DM HR" link.
+- **Public shop**: `/shop` lists active items with prices and descriptions. When `SHOP_SELF_SERVE_ENABLED=true`, signed-in users can `Buy` directly — the purchase atomically debits balance + decrements stock + creates a pending order, and the bot posts an announcement to `#tacoshop` with `Mark fulfilled` / `Cancel & refund` buttons that admins click without leaving Slack. Buyers see their own pending orders on `/shop` and can self-cancel.
 - **Admin console**: `/admin/items` (catalog CRUD with image upload), `/admin/users` (redemption form), `/admin/activity` (chronological give feed with reversal status, channel filter, and Slack deep-links), and `/admin/leaderboard` (ranked list with metric/period/channel filters). All gated by Sign in with Slack against `ADMIN_SLACK_IDS`.
 - **Append-only audit log**: every give, redemption, and reversal is a row in `transactions` with the channel, message timestamp, admin, item, and reason.
 - **Reversible gives**: deleting your `:taco:` message or removing your 🌮 reaction writes a compensating `type='reversal'` row, decrements the recipient's balance, restores your daily allowance (capped at the daily cap), and DMs both parties.
@@ -56,8 +56,10 @@ Copy `.env.example` to `.env.local` (for dev) or set them in Vercel project sett
 | `TACO_ALT_EMOJI_NAME` | Optional; custom emoji name (no colons) accepted as currency alongside `:taco:`. When set, the bot's confirmation reaction (if enabled) uses this emoji instead of `:taco:`. |
 | `TACO_REACT_ON_GIVE` | Optional; if `true`, the bot adds a `:taco:` (or alt-emoji) reaction to the giver's message as a visual ack. Defaults to `false` — recommended off, since the bot's reaction is easily mistaken for an extra give. |
 | `ADMIN_SLACK_IDS` | Comma-separated Slack user IDs allowed into `/admin` |
-| `HR_SLACK_ID` | Optional; if set, `/shop` renders a clickable DM link to this Slack user |
-| `HR_SLACK_HANDLE` | Optional; display handle (without `@`) for the `/shop` HR contact |
+| `HR_SLACK_ID` | Legacy `/shop` HR contact link (retires alongside self-serve flag) |
+| `HR_SLACK_HANDLE` | Legacy display handle (without `@`) for HR contact |
+| `SHOP_SELF_SERVE_ENABLED` | When `true`, `/shop` shows Buy buttons + a pending-orders panel and posts to `#tacoshop`. Defaults to `false`. |
+| `TACOSHOP_CHANNEL_ID` | Required when self-serve is on: Slack channel ID where order announcements + admin Fulfill / Cancel buttons live |
 | `AUTH_SECRET` | `openssl rand -base64 32` |
 | `AUTH_URL` | Auto-set on Vercel via `VERCEL_URL` |
 | `POSTGRES_URL` | Provided by the Vercel Postgres integration |

@@ -16,39 +16,47 @@ User-facing overview lives in `README.md`. Architectural deep-dive lives in `doc
 app/
   layout.tsx                       Root layout, metadata, favicons
   page.tsx                         Landing
-  shop/page.tsx                    Public catalog (ISR, revalidate=60); renders HR contact link
-  admin/layout.tsx                 Auth gate: redirects unauthenticated to signin
+  shop/page.tsx                    Catalog. Anonymous + signed-in views; Buy buttons + Your-pending-orders panel when SHOP_SELF_SERVE_ENABLED
+  shop/actions.ts                  buyItem (purchase + post to #tacoshop) and cancelMyOrder (buyer self-cancel)
+  admin/layout.tsx                 Auth gate: signin if unauthenticated, /shop redirect if not in ADMIN_SLACK_IDS
   admin/page.tsx                   Admin home
   admin/users/{page,actions}.tsx   User table + redemption form (deductTacos) + signed-balance adjustment (adjustTacos)
   admin/users/AdjustForm.tsx       Client component: window.confirm() gate around the Adjust form
   admin/items/{page,actions}.tsx   Items CRUD + Vercel Blob upload
   admin/activity/page.tsx          Chronological feed of give events with reversal status, channel filter, cursor pagination
   admin/leaderboard/page.tsx       Ranked list of givers/receivers with metric (received/given/combined), period, and channel filters
+  admin/orders/{page,actions}.tsx  Order list (filter by status) + Fulfill / Cancel admin actions
   api/auth/[...nextauth]/route.ts  Auth.js handlers
-  api/slack/events/route.ts        Bolt webhook: getReceiver().handle(req)
+  api/slack/events/route.ts        Bolt webhook: getReceiver().handle(req) — also handles interactivity payloads (form-urlencoded)
   api/cron/reset-allowance/        Daily reset; verified via Bearer ${CRON_SECRET}
 
 lib/
   config.ts                        Lazy env-var getters (see Invariants)
-  auth.ts                          NextAuth + Slack OIDC + admin allowlist gate
+  auth.ts                          NextAuth + Slack OIDC; admits any active user (admin allowlist enforced in /admin/layout)
   db/
     client.ts                      Drizzle client over @vercel/postgres
-    schema.ts                      users, items, transactions; CHECK constraints
-    queries.ts                     upsertUser, ensureUserExists, listActiveItems, getLeaderboard
+    schema.ts                      users, items, transactions, orders; CHECK constraints
+    queries.ts                     upsertUser, ensureUserExists, listActiveItems, getLeaderboard, listOrders, getOrderById
     types.ts                       DbLike (Postgres / pglite-compatible)
+  shop/
+    types.ts                       Actor = { kind: "admin"|"buyer"; userId }
+    purchase.ts                    Atomic purchase() — FOR UPDATE item, stock+balance decrement, order+redeem insert
+    fulfill.ts                     fulfillOrder() — pending→fulfilled, idempotent via WHERE status='pending'
+    cancel.ts                      cancelOrder() — pending→cancelled with refund grant; supports admin and buyer actors
   slack/
     bolt.ts                        Lazy singleton App + Receiver factories
-    receiver.ts                    AppRouterReceiver: HMAC verify, URL handshake
-    handlers.ts                    registerAllHandlers() — wires the four below
+    receiver.ts                    AppRouterReceiver: HMAC verify, URL handshake, JSON + form-urlencoded payload decoding
+    handlers.ts                    registerAllHandlers() — wires the five below
     handlers/message.ts            Channel `:taco:` mention → give; `message_deleted` → reverse all gives on that message
     handlers/reaction.ts           `reaction_added` → 1-taco give; `reaction_removed` → reverse the reactor's give(s)
     handlers/commands.ts           App mentions + DMs: score/balance/left/shop/help
     handlers/userSync.ts           team_join + user_change → upsert/deactivate
+    handlers/orderActions.ts       order_fulfill / order_cancel block_actions — admin-gated, updates #tacoshop message + DMs buyer
     give.ts                        validate() + decide() — pure domain logic
     execute.ts                     executeGive() — transactional with idempotency
     reverse.ts                     executeMessageReversal() / executeReactionReversal() — append-only compensation
     parser.ts                      countTacos, findUserIds
-    format.ts                      Slack message strings
+    format.ts                      Slack message strings + order block-kit + order DM strings
     channelInfo.ts                 resolveChannelName with 1h TTL + in-flight dedup
     userInfo.ts                    resolveUserName with 1h TTL + in-flight dedup
     botUserId.ts                   getBotUserId() singleton
@@ -98,8 +106,11 @@ These are load-bearing. Don't paper over them — fix the underlying issue.
 - **Atomic redeem** (`lib/admin/redeem.ts:17`): same pattern on `balance`. The atomic `WHERE balance >= amount` (not a DB CHECK — `balance >= 0` was relaxed) is what prevents overdraw on redemption.
 - **Append-only reversals** (`lib/slack/reverse.ts`): undoing a give writes a `type='reversal'` row referencing the original via `reversed_transaction_id` (UNIQUE). Counters update too: recipient's `balance`/`receivedTotal` decrement (allowed to go negative), giver's `daily_remaining` is restored capped at `dailyAllowance`. Never UPDATE/DELETE existing transactions — always insert compensation.
 - **Idempotency**: each individual taco is its own `transactions` row keyed by `slack_event_id`. Composite forms: `${envelopeEventId}-${idx}` for messages, `react-${channel}-${ts}-${reactor}-${idx}` for reactions, `delete-${original.id}` / `unreact-${original.id}` for reversals. The UNIQUE constraint + `onConflictDoNothing` makes Slack retries safe; for gives, if any insert returns 0 rows the whole give rolls back as `duplicate`. For reversals, per-row `onConflictDoNothing` on `reversed_transaction_id` lets a partial run resume cleanly.
-- **DB CHECK constraints** (`lib/db/schema.ts`): `dailyRemaining >= 0`, `balance <= receivedTotal`, `priceTacos > 0`, `quantity > 0 OR NULL`, unique `lower(name)` among active items, four-way row shape (give: `fromUserId` set, no admin/item/reversal-ref, no self-give; redeem: `adminUserId` + `itemId` set, no `fromUserId`/reversal-ref; reversal: only `toUserId` and `reversedTransactionId` set, plus UNIQUE on `reversedTransactionId` to block double-reversal; grant: `adminUserId` set, no `fromUserId`/`itemId`/reversal-ref). The amount CHECK is type-conditional: `give`/`redeem`/`reversal` require `amount > 0`, but `grant` only requires `amount <> 0` so admins can issue negative adjustments. `balance` and `receivedTotal` *may* be negative — they decrement together when a give is reversed after the recipient has already redeemed, or when an admin grants a negative amount. Don't bypass with raw SQL.
-- **Auth.js admin gate** (`lib/auth.ts:14`) lives in the `signIn` callback, not a layout redirect. Non-admins never get a session. The admin layout still redirects unauthenticated visitors to `/api/auth/signin?callbackUrl=/admin`.
+- **DB CHECK constraints** (`lib/db/schema.ts`): `dailyRemaining >= 0`, `balance <= receivedTotal`, `priceTacos > 0`, `quantity >= 0 OR NULL` (zero means "sold out, item still active so cancel can restore stock"), unique `lower(name)` among active items, four-way row shape with discriminator columns (give: `fromUserId` set, no admin/item/order/reversal-ref, no self-give; redeem: `itemId` set, no `fromUserId`/reversal-ref, AND exactly one of `adminUserId` (admin-deducted) or `orderId` (self-serve) — the two are mutually exclusive; reversal: only `toUserId` and `reversedTransactionId` set, plus UNIQUE on `reversedTransactionId` to block double-reversal; grant: `fromUserId`/`itemId`/reversal-ref null, AND either `adminUserId` set with `orderId` null (onboarding/normalization) OR `orderId` set with optional `adminUserId` (refund grant: admin-cancel sets both, buyer self-cancel leaves `adminUserId` null)). The amount CHECK is type-conditional: `give`/`redeem`/`reversal` require `amount > 0`, but `grant` only requires `amount <> 0` so admins can issue negative adjustments. `balance` and `receivedTotal` *may* be negative — they decrement together when a give is reversed after the recipient has already redeemed, or when an admin grants a negative amount. Don't bypass with raw SQL.
+- **`orders` state machine** (`lib/db/schema.ts`): three statuses (`pending`, `fulfilled`, `cancelled`) with a CHECK that enforces shape per state — `pending` has no terminal timestamps or admin/refund refs; `fulfilled` requires `fulfilledAt` + `fulfilledByAdminId`; `cancelled` requires `cancelledAt` + `refundTxId`, with `cancelledByAdminId` nullable so buyer self-cancel is legal. Snapshot fields `itemNameSnap`, `descriptionSnap`, `redemptionInstructionsSnap`, `pricePaid` are frozen at purchase time so later item edits don't rewrite history. Transitions are owned by `lib/shop/purchase.ts` (insert pending), `lib/shop/fulfill.ts` (pending → fulfilled, atomic on `WHERE status='pending'`), `lib/shop/cancel.ts` (pending → cancelled with refund + stock restore). Never mutate orders directly — use these or you'll skip the ledger row + counters update.
+- **Self-serve purchase atomicity** (`lib/shop/purchase.ts`): single `db.transaction` with `FOR UPDATE` on the item row, conditional `UPDATE … WHERE quantity >= 1` for stock and `UPDATE … WHERE balance >= price` for funds, then insert order + redeem-tx + patch `orders.redeemTxId`. Failures throw a `PurchaseAbort` sentinel so the whole tx rolls back; the outer catch maps it to `{ kind: "out_of_stock" | "insufficient" | "unavailable" }`. Returning a typed value from inside the tx callback would COMMIT partial writes — always throw to roll back.
+- **Cancel-refund mechanics** (`lib/shop/cancel.ts`): refund only touches `users.balance` (not `receivedTotal`) — purchase decremented `balance` and left `receivedTotal` alone, so cancel's `balance += pricePaid` restores the pre-purchase state and the `balance <= receivedTotal` invariant survives. Refund inserts a `type='grant'` row with `orderId` set; `adminUserId` is the admin slack id on admin-cancel and `NULL` on buyer self-cancel (the discriminator in the relaxed `shape_and_rule` CHECK). The existing `lib/admin/grant.ts` adjusts BOTH `balance` and `receivedTotal` — don't reuse it for refunds.
+- **Auth gate split**: `lib/auth.ts` `signIn` callback admits any active user (and auto-inserts on first sign-in via `onConflictDoUpdate`). The admin allowlist gate lives in `app/admin/layout.tsx` — non-admins get a session and `/shop` access, but `/admin/*` redirects them to `/shop?err=admin_only`. The admin layout still redirects unauthenticated visitors to `/api/auth/signin?callbackUrl=/admin`.
 - **User-name freshness** (`lib/slack/userInfo.ts`): 1-hour TTL cache + in-flight dedup. Score/leaderboard renders `<@USERID>` mentions so Slack handles current display name + avatar — we never have to re-render the cached name.
 - **Currency emoji set** (`lib/config.ts` → `taco.acceptedEmojis`): `:taco:` is always accepted. If `TACO_ALT_EMOJI_NAME` is set, that custom emoji is *additionally* accepted for both typed mentions and reactions. Read this set via `config.taco.acceptedEmojis` / `config.taco.confirmationEmojiName` — don't hardcode `"taco"` in handlers. The bot's confirmation reaction (`reactions.add`) is gated by `config.taco.reactOnGive` (env `TACO_REACT_ON_GIVE`, default `false`) — `confirmationEmojiName` is only consulted when that flag is on. **Bot message prose** (over-allowance, message/reaction-deleted DMs, grant DMs, leaderboard/help banner) also uses `config.taco.confirmationEmojiName` as its leading branding shortcode, passed in by callers — `lib/slack/format.ts` stays config-free. Reaction-removed DMs echo `event.reaction` (the actual emoji removed), not the configured one, so the user sees what they did. The instructional `:taco:` in the help text is intentionally literal because `:taco:` is always in the accepted set.
 
@@ -139,9 +150,13 @@ These are load-bearing. Don't paper over them — fix the underlying issue.
 | Change give/redeem rules | `lib/slack/give.ts` + `lib/slack/execute.ts` (or `lib/admin/redeem.ts`) |
 | Add/correct a user's balance from admin panel | `app/admin/users/{page,actions,AdjustForm}.tsx` + `lib/admin/grant.ts` |
 | Change reversal rules (delete/unreact) | `lib/slack/reverse.ts` + handlers in `lib/slack/handlers/{message,reaction}.ts` |
+| Change self-serve purchase rules | `lib/shop/purchase.ts` (+ `app/shop/actions.ts` for UX) |
+| Change fulfill/cancel rules | `lib/shop/{fulfill,cancel}.ts` (+ Slack handler in `lib/slack/handlers/orderActions.ts`, web actions in `app/admin/orders/actions.ts`, buyer action in `app/shop/actions.ts`) |
+| Change the #tacoshop announcement / state-change block kit | `lib/slack/format.ts` (`orderPostedBlocks` / `orderFulfilledBlocks` / `orderCancelledBlocks`) |
 | Bootstrap users from Slack | `pnpm sync-users` (`scripts/sync-users.ts`) |
 | Add an admin | env: `ADMIN_SLACK_IDS` (comma-separated Slack IDs) + redeploy |
-| Add the HR contact link to `/shop` | env: `HR_SLACK_ID` + `HR_SLACK_HANDLE` |
+| Flip self-serve shop on/off | env: `SHOP_SELF_SERVE_ENABLED` (default `false`); requires `TACOSHOP_CHANNEL_ID` when on |
+| Add the HR contact link to `/shop` (legacy, retired by self-serve) | env: `HR_SLACK_ID` + `HR_SLACK_HANDLE` |
 | Channel allowlist | env: `TACO_CHANNELS` |
 
 For a deeper map (data flow, idempotency, concurrency model), see `docs/architecture.md`. For the operator runbook (deploy, audit queries, smoke tests), see `docs/operations.md`. For local-dev specifics (devcontainer, ngrok, testing patterns), see `docs/development.md`.
