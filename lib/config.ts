@@ -152,6 +152,15 @@ export const config = {
   get cronSecret(): string | undefined {
     return optional("CRON_SECRET");
   },
+  get tacoshopChannelId(): string {
+    return required({
+      name: "TACOSHOP_CHANNEL_ID",
+      usedFor: "channel where self-serve shop orders are announced",
+    });
+  },
+  get shopSelfServeEnabled(): boolean {
+    return boolWithDefault("SHOP_SELF_SERVE_ENABLED", false);
+  },
 };
 
 export type AppConfig = typeof config;
