@@ -80,8 +80,8 @@ export function registerOrderActionHandlers(app: App): void {
           channel: ctx.order.slackChannelId,
           ts: ctx.order.slackMessageTs,
           text: view.text,
-          blocks: view.blocks as Parameters<typeof client.chat.update>[0]["blocks"],
-        });
+          blocks: view.blocks,
+        } as Parameters<typeof client.chat.update>[0]);
       }
     } catch (err) {
       console.error("[orderActions] chat.update failed", err);
@@ -129,8 +129,8 @@ export function registerOrderActionHandlers(app: App): void {
           channel: ctx.order.slackChannelId,
           ts: ctx.order.slackMessageTs,
           text: view.text,
-          blocks: view.blocks as Parameters<typeof client.chat.update>[0]["blocks"],
-        });
+          blocks: view.blocks,
+        } as Parameters<typeof client.chat.update>[0]);
       }
     } catch (err) {
       console.error("[orderActions] chat.update failed", err);

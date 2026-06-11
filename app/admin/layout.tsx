@@ -17,6 +17,11 @@ export default async function AdminLayout({ children }: { children: React.ReactN
     // Trigger Slack sign-in.
     redirect("/api/auth/signin?callbackUrl=/admin");
   }
+  const slackUserId = (session as { slackUserId?: string }).slackUserId;
+  if (!slackUserId || !config.admin.slackIds.includes(slackUserId)) {
+    // Non-admins sign in fine; they just can't see admin pages.
+    redirect("/shop?err=admin_only");
+  }
 
   return (
     <div className="min-h-screen bg-gray-50">
@@ -28,6 +33,7 @@ export default async function AdminLayout({ children }: { children: React.ReactN
             <Link href="/admin/leaderboard" className="text-gray-700 hover:text-gray-900">Leaderboard</Link>
             <Link href="/admin/users" className="text-gray-700 hover:text-gray-900">Users</Link>
             <Link href="/admin/items" className="text-gray-700 hover:text-gray-900">Items</Link>
+            <Link href="/admin/orders" className="text-gray-700 hover:text-gray-900">Orders</Link>
             <form
               action={async () => {
                 "use server";

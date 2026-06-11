@@ -1,7 +1,8 @@
-import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { items, transactions, users } from "./schema";
+import { items, orders, transactions, users } from "./schema";
 import type { DbLike } from "./types";
+import type { OrderStatus } from "./schema";
 
 /**
  * Insert or update a user. On conflict, updates the name and updatedAt
@@ -55,6 +56,36 @@ export async function ensureUserExists(
       dailyRemaining: input.dailyAllowance,
     })
     .onConflictDoNothing({ target: users.id });
+}
+
+export type ListOrdersOptions = {
+  status?: OrderStatus;
+  userId?: string;
+  itemId?: string;
+  cursor?: { createdAt: Date };
+  limit?: number;
+};
+
+/**
+ * List orders newest-first with optional filters and cursor pagination.
+ * `cursor.createdAt` is exclusive — pass the createdAt of the last row of the
+ * previous page to fetch older rows. Returns up to `limit` rows.
+ */
+export async function listOrders(db: DbLike, opts: ListOrdersOptions = {}) {
+  const limit = opts.limit ?? 50;
+  const conds = [];
+  if (opts.status) conds.push(eq(orders.status, opts.status));
+  if (opts.userId) conds.push(eq(orders.userId, opts.userId));
+  if (opts.itemId) conds.push(eq(orders.itemId, opts.itemId));
+  if (opts.cursor) conds.push(lt(orders.createdAt, opts.cursor.createdAt));
+  const q = db.select().from(orders);
+  const filtered = conds.length ? q.where(and(...conds)) : q;
+  return filtered.orderBy(desc(orders.createdAt)).limit(limit);
+}
+
+export async function getOrderById(db: DbLike, id: string) {
+  const [row] = await db.select().from(orders).where(eq(orders.id, id));
+  return row ?? null;
 }
 
 /**
